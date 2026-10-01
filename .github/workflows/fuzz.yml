@@ -1,0 +1,51 @@
+name: tengine-fuzz-lab
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 搭建靶场
+        run: bash lab/setup_ci.sh
+
+      - name: 启动黑盒 fuzz 目标（正常版）
+        run: |
+          cd lab/bin/normal
+          nohup ./sbin/nginx -p "$GITHUB_WORKSPACE/lab/bin/normal" -c conf/nginx.conf > /dev/null 2>&1 &
+          sleep 2
+          curl -s -o /dev/null -w "target up: %{http_code}\n" http://127.0.0.1:18080/
+
+      - name: 黑盒 fuzz（默认 330 分钟）
+        run: |
+          cd lab/fuzz
+          python3 blackfuzz.py --target 127.0.0.1:18080 --workers 4 --duration 19800
+
+      - name: 停止目标
+        if: always()
+        run: pkill -f "bin/normal" || true
+
+      - name: 上传崩溃样本（无论是否为空）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crashers
+          path: lab/fuzz/crashers/
+          if-no-files-found: ignore
+
+      - name: ASAN 分诊（有样本才执行）
+        if: hashFiles('lab/fuzz/crashers/crash_*.req') != ''
+        run: bash lab/triage_ci.sh
+
+      - name: 上传 ASAN 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan_logs
+          path: lab/asan_logs/
+          if-no-files-found: ignore
